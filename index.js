@@ -1,5 +1,6 @@
 import express from 'express';
-import axios from 'axios';
+import https from 'node:https';
+import http from 'node:http';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
@@ -8,17 +9,19 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// NO body parsers — proxy doesn't need them, and they can interfere
 
 // Configuration
-const BINANCE_BASE = process.env.BINANCE_ENV === 'mainnet'
+const BINANCE_BASE_URL = process.env.BINANCE_ENV === 'mainnet'
   ? 'https://api.binance.com'
   : 'https://testnet.binance.vision';
 
 const API_KEY = process.env.BINANCE_TESTNET_API_KEY || process.env.BINANCE_API_KEY;
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET;
 const PORT = process.env.PORT || 3001;
+
+const binanceUrl = new URL(BINANCE_BASE_URL);
+const httpModule = binanceUrl.protocol === 'https:' ? https : http;
 
 // Logging middleware
 app.use((req, res, next) => {
@@ -29,14 +32,14 @@ app.use((req, res, next) => {
 // Auth middleware
 function verifyAuth(req, res, next) {
   if (!PROXY_AUTH_SECRET) {
-    console.warn('⚠️  WARNING: PROXY_AUTH_SECRET not set - proxy is open!');
+    console.warn('\u26a0\ufe0f  WARNING: PROXY_AUTH_SECRET not set - proxy is open!');
     return next();
   }
 
   const token = req.headers.authorization?.replace('Bearer ', '');
 
   if (token !== PROXY_AUTH_SECRET) {
-    console.error('❌ Unauthorized request');
+    console.error('\u274c Unauthorized request');
     return res.status(401).json({ error: 'Unauthorized', message: 'Invalid authentication token' });
   }
 
@@ -48,48 +51,60 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    binanceEndpoint: BINANCE_BASE,
+    binanceEndpoint: BINANCE_BASE_URL,
     authConfigured: !!PROXY_AUTH_SECRET
   });
 });
 
-// Proxy all Binance requests
-// The calling app handles signing - the proxy just forwards with the Binance API key
-app.all('/binance/*', verifyAuth, async (req, res) => {
-  try {
-    // Use originalUrl to preserve exact query string (no re-parsing).
-    // This avoids URLSearchParams mangling signed params.
-    const originalPath = req.originalUrl.replace('/binance', '');
-    const url = `${BINANCE_BASE}${originalPath}`;
+// Proxy all Binance requests using raw Node.js http/https
+// No axios, no body parsers, no interference — just passthrough
+app.all('/binance/*', verifyAuth, (req, res) => {
+  // Preserve exact query string from original request (already signed)
+  const originalPath = req.originalUrl.replace('/binance', '');
+  const targetUrl = `${BINANCE_BASE_URL}${originalPath}`;
 
-    // Replace our auth header with Binance API key
-    const headers = {
+  console.log(`\u2192 ${req.method} ${targetUrl}`);
+
+  const parsed = new URL(targetUrl);
+
+  const options = {
+    hostname: parsed.hostname,
+    port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+    path: parsed.pathname + parsed.search,
+    method: req.method,
+    headers: {
       'X-MBX-APIKEY': API_KEY,
       'User-Agent': 'Mozilla/5.0 (compatible; TradingBot/1.0)',
-    };
+    },
+    timeout: 15000,
+  };
 
-    // Do NOT send Content-Type or body for signed requests —
-    // all params are in the query string (already signed by calling app).
-    // Sending a body would cause Binance error -1104 (extra params).
-
-    console.log(`→ ${req.method} ${url}`);
-
-    const response = await axios({
-      method: req.method,
-      url,
-      headers,
-      timeout: 15000,
+  const proxyReq = httpModule.request(options, (proxyRes) => {
+    let body = '';
+    proxyRes.on('data', (chunk) => { body += chunk; });
+    proxyRes.on('end', () => {
+      console.log(`${proxyRes.statusCode >= 400 ? '\u2717' : '\u2713'} ${proxyRes.statusCode}`);
+      res.status(proxyRes.statusCode);
+      try {
+        res.json(JSON.parse(body));
+      } catch {
+        res.send(body);
+      }
     });
+  });
 
-    console.log(`✓ ${response.status}`);
-    res.status(response.status).json(response.data);
+  proxyReq.on('error', (err) => {
+    console.error(`\u2717 Proxy error: ${err.message}`);
+    res.status(502).json({ error: 'Proxy error', message: err.message });
+  });
 
-  } catch (error) {
-    const status = error.response?.status || 500;
-    const data = error.response?.data || { error: error.message };
-    console.error(`✗ ${status} - ${JSON.stringify(data).substring(0, 200)}`);
-    res.status(status).json(data);
-  }
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    res.status(504).json({ error: 'Proxy timeout' });
+  });
+
+  // Send request with NO body — just headers and URL
+  proxyReq.end();
 });
 
 // 404
@@ -102,10 +117,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('\n🚀 Binance Proxy Server');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 Binance: ${BINANCE_BASE}`);
-  console.log(`🔐 Auth: ${PROXY_AUTH_SECRET ? 'Enabled ✓' : 'DISABLED ⚠️'}`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  console.log('\n\ud83d\ude80 Binance Proxy Server');
+  console.log('\u2501'.repeat(41));
+  console.log(`\ud83d\udce1 Port: ${PORT}`);
+  console.log(`\ud83c\udf10 Binance: ${BINANCE_BASE_URL}`);
+  console.log(`\ud83d\udd10 Auth: ${PROXY_AUTH_SECRET ? 'Enabled \u2713' : 'DISABLED \u26a0\ufe0f'}`);
+  console.log('\u2501'.repeat(41) + '\n');
 });
