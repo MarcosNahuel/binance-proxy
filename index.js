@@ -75,6 +75,7 @@ app.all('/binance/*', verifyAuth, (req, res) => {
     headers: {
       'X-MBX-APIKEY': API_KEY,
       'User-Agent': 'Mozilla/5.0 (compatible; TradingBot/1.0)',
+      'Content-Length': '0',
     },
     timeout: 15000,
   };
