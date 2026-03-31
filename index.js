@@ -72,16 +72,15 @@ app.all('/binance/*', verifyAuth, async (req, res) => {
       'User-Agent': 'Mozilla/5.0 (compatible; TradingBot/1.0)',
     };
 
-    if (req.method !== 'GET' && req.method !== 'DELETE') {
-      headers['Content-Type'] = 'application/json';
-    }
+    // Do NOT send Content-Type or body for signed requests —
+    // all params are in the query string (already signed by calling app).
+    // Sending a body would cause Binance error -1104 (extra params).
 
     console.log(`→ ${req.method} ${url}`);
 
     const response = await axios({
       method: req.method,
       url,
-      data: req.method !== 'GET' ? req.body : undefined,
       headers,
       timeout: 15000,
     });
