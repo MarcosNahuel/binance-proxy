@@ -57,14 +57,10 @@ app.get('/health', (req, res) => {
 // The calling app handles signing - the proxy just forwards with the Binance API key
 app.all('/binance/*', verifyAuth, async (req, res) => {
   try {
-    const binancePath = req.path.replace('/binance', '');
-    let url = `${BINANCE_BASE}${binancePath}`;
-
-    // Forward query params as-is (already signed by the calling app)
-    const queryString = new URLSearchParams(req.query).toString();
-    if (queryString) {
-      url += '?' + queryString;
-    }
+    // Use originalUrl to preserve exact query string (no re-parsing).
+    // This avoids URLSearchParams mangling signed params.
+    const originalPath = req.originalUrl.replace('/binance', '');
+    const url = `${BINANCE_BASE}${originalPath}`;
 
     // Replace our auth header with Binance API key
     const headers = {
